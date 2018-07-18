@@ -25,55 +25,66 @@ stops = set(stopwords.words("spanish"))
 from sklearn.feature_extraction.text import TfidfVectorizer  
 from sklearn.cross_validation import cross_val_score
 
-
-print '===read data==='
 df_train_en_sp = pd.read_csv('./input/cikm_english_train_20180516.txt',sep='	', header=None,error_bad_lines=False)
 df_train_sp_en = pd.read_csv('./input/cikm_spanish_train_20180516.txt',sep='	', header=None,error_bad_lines=False)
 df_train_en_sp.columns = ['english1', 'spanish1', 'english2', 'spanish2', 'result']
-df_train_sp_en.columns = ['spanish1', 'english1', 'english2', 'spanish2', 'result']
+df_train_sp_en.columns = ['spanish1', 'english1',  'spanish2', 'english2','result']
 
+# Evaluation data
 test_data = pd.read_csv('./input/cikm_test_a_20180516.txt', sep='	', header=None,error_bad_lines=False)
 test_data.columns = ['spanish1', 'spanish2']
 
-print "===clean text==="
-def subchar(text):
-	text=text.replace("á", "a")
-	text=text.replace("ó", "o")
-	text=text.replace("é", "e")	
-	text=text.replace("í", "i")
-	text=text.replace("ú", "u")	
-	return text
+train1 = pd.DataFrame(pd.concat([df_train_en_sp['spanish1'],df_train_sp_en['spanish1']], axis=0))
+train2 = pd.DataFrame(pd.concat([df_train_en_sp['spanish2'],df_train_sp_en['spanish2']], axis=0))
+train = pd.concat([train1,train2],axis=1).reset_index()
+train = train.drop(['index'],axis=1)
+result = pd.DataFrame(pd.concat([df_train_en_sp['result'],df_train_sp_en['result']], axis=0)).reset_index()
+result = result.drop(['index'],axis=1)
+train['result'] = result
 
+# Clean up the weird spanish symbols
+# Replacing Spanish capital vowels to lower case
+
+def clean_sent(sent):
+    sent = sent.lower()
+    sent = re.sub(u'[_"\-;%()|+&=*%.,!?:#$@\[\]/]','',sent)
+    sent = re.sub('¡','',sent)
+    sent = re.sub('¿','',sent)
+    sent = re.sub('Á','á',sent)
+    sent = re.sub('Ó','ó',sent)
+    sent = re.sub('Ú','ú',sent)
+    sent = re.sub('É','é',sent)
+    sent = re.sub('Í','í',sent)
+    return sent
 def cleanSpanish(df):
-	df['spanish1'] = df.spanish1.map(lambda x: ' '.join([snowball_stemmer.stem(word) for word in nltk.word_tokenize(x.lower().decode('utf-8'))]).encode('utf-8'))
-	df['spanish2'] = df.spanish2.map(lambda x: ' '.join([snowball_stemmer.stem(word) for word in nltk.word_tokenize(x.lower().decode('utf-8'))]).encode('utf-8'))
-	#西班牙语缩写还原#
+    df['spanish1'] = df.spanish1.map(lambda x: ' '.join([ word for word in
+                                                         nltk.word_tokenize(clean_sent(x).decode('utf-8'))]).encode('utf-8'))
+    df['spanish2'] = df.spanish2.map(lambda x: ' '.join([ word for word in
+                                                         nltk.word_tokenize(clean_sent(x).decode('utf-8'))]).encode('utf-8'))
+def removeSpanishStopWords(df, stop):
+    df['spanish1'] = df.spanish1.map(lambda x: ' '.join([word for word in nltk.word_tokenize(x.decode('utf-8'))
+                                                         if word not in stop]).encode('utf-8'))
+    df['spanish2'] = df.spanish2.map(lambda x: ' '.join([word for word in nltk.word_tokenize(x.decode('utf-8'))
+							 if word not in stop]).encode('utf-8'))
+def stemSpanish(df):
+    df['spanish1'] = df.spanish1.map(lambda x: ' '.join([snowball_stemmer.stem(word) for word in nltk.word_tokenize(x.lower().decode('utf-8'))]).encode('utf-8'))
+    df['spanish2'] = df.spanish2.map(lambda x: ' '.join([snowball_stemmer.stem(word) for word in nltk.word_tokenize(x.lower().decode('utf-8'))]).encode('utf-8'))
 
-
-
-
-def removestopwords(df, stop):
-	df['spanish1'] = df.spanish1.map(lambda x: ' '.join([word for word in nltk.word_tokenize(x.decode('utf-8'))  if word not in stop]).encode('utf-8'))
-	df['spanish2'] = df.spanish2.map(lambda x: ' '.join([word for word in nltk.word_tokenize(x.decode('utf-8'))  if word not in stop]).encode('utf-8'))
-
-cleanSpanish(df_train_en_sp)
-cleanSpanish(df_train_sp_en)
-
-
-train_data1 = df_train_en_sp.drop(['english1','english2'],axis=1)
-train_data2 = df_train_sp_en.drop(['english1','english2'],axis=1)
-
-train_data = pd.concat([train_data1,train_data2],axis=0)
-
-print test_data.shape
+cleanSpanish(train)
+removeSpanishStopWords(train,stops)
+stemSpanish(train)
 
 cleanSpanish(test_data)
+removeSpanishStopWords(test_data,stops)
+stemSpanish(test_data)
 
+train_data = train
+train_data.columns = ['spanish1','spanish2','result']
+test_data.columns = ['spanish1','spanish2']
 
 stptrain = train_data.copy()
 stptest = test_data.copy()
-removestopwords(stptrain, stops)
-removestopwords(stptest, stops)
+
 
 
 print "===feature engineering==="
@@ -110,7 +121,7 @@ def negativeWordsCount(row):
 
 
  
-def shareWordscnt(row):
+def shareWordscnt(row,tfidf):
 	fs=list()
 	q1words = {}
         q2words = {}
@@ -120,13 +131,28 @@ def shareWordscnt(row):
         for word in str(row['spanish2']).lower().split():
             if word not in stops:
                 q2words[word] = q2words.get(word, 0) + 1
-        n_shared_word_in_q1 = sum([q1words[w] for w in q1words if w in q2words])
-        n_shared_word_in_q2 = sum([q2words[w] for w in q2words if w in q1words])
-        n_tol = sum(q1words.values()) + sum(q2words.values())
+	q1val = np.sum(tfidf.transform([str(row['spanish1'])]).data)
+        q2val = np.sum(tfidf.transform([str(row['spanish2'])]).data)
+	n_shared_word_in_q1 = np.sum([np.sum(q1words[w]*tfidf.transform([w]).data) for w in q1words if w in q2words])
+        n_shared_word_in_q2 = np.sum([np.sum(q2words[w]*tfidf.transform([w]).data) for w in q2words if w in q1words])
+        n_tol = q1val+q2val
         if 1e-6 > n_tol:
-            fs.append(0.)
+            	fs.append(0.)
+		fs.append(0.)
         else:
-            fs.append(1.0 * (n_shared_word_in_q1 + n_shared_word_in_q2) / n_tol)
+        	fs.append(1.0 * (n_shared_word_in_q1 + n_shared_word_in_q2) / n_tol)
+		fs.append(1.0 * (n_shared_word_in_q1 * n_shared_word_in_q2) / n_tol)
+	#fs.append(n_shared_word_in_q1)
+	#fs.append(n_shared_word_in_q2)
+	if 1e-6 > q1val:
+		fs.append(0.)
+	else:
+		fs.append(1.0*n_shared_word_in_q1/q1val)
+	
+	if 1e-6 > q2val:
+		fs.append(0.)
+	else:
+		fs.append(1.0*n_shared_word_in_q2/q2val)
 	return fs
 
 
@@ -393,7 +419,7 @@ def extract_dul_fs(dul_num, row):
 
         dn1 = dul_num[q1]
         dn2 = dul_num[q2]
-        return [dn1, dn2, max(dn1, dn2), min(dn1, dn2)]
+        return [min(dn1, dn2),max(dn1, dn2)]
 
 
 def extract_math(row):
@@ -404,7 +430,7 @@ def extract_math(row):
         q2_cnt = q2.count('[math]')
         pair_and = int((0 < q1_cnt) and (0 < q2_cnt))
         pair_or = int((0 < q1_cnt) or (0 < q2_cnt))
-        return [q1_cnt, q2_cnt, pair_and, pair_or]
+        return [q1_cnt, q2_cnt]
 
 
 
@@ -412,8 +438,6 @@ def extract_diff_char( row):
         s = 'abcdefghijklmnopqrstuvwxyz'
         q1 = str(row['spanish1']).strip()
         q2 = str(row['spanish2']).strip()
-	q1 = subchar(q1)
-	q2 = subchar(q2)
 	
         fs1 = [0] * 26
         fs2 = [0] * 26
@@ -431,17 +455,28 @@ def extract_ngram_jaccard_distance(row):
         q1_words = str(row['spanish1']).lower().split()
         q2_words = str(row['spanish2']).lower().split()
         fs = []
-        for n in range(1, 4):
+        for n in range(2, 5):
             q1_ngrams = NgramUtil.ngrams(q1_words, n)
             q2_ngrams = NgramUtil.ngrams(q2_words, n)
             fs.append(DistanceUtil.jaccard_coef(q1_ngrams, q2_ngrams))
+            a=set(q1_ngrams)
+	    b=set(q2_ngrams)
+	    if n == 6:
+	    	if len(a) < 1e-6:
+            		fs.append(0.)
+            	else:
+            		fs.append(1.0 * len(a & b)/ len(a))
+	    	if len(b) < 1e-6:
+ 	        	fs.append(0.)
+            	else:
+                	fs.append(1.0 * len(a & b)/ len(b))
         return fs
 
 def extract__ngram_dice_distance(row):
         q1_words = str(row['spanish1']).lower().split()
         q2_words = str(row['spanish2']).lower().split()
         fs = []
-        for n in range(1, 4):
+        for n in range(2, 5):
             q1_ngrams = NgramUtil.ngrams(q1_words, n)
             q2_ngrams = NgramUtil.ngrams(q2_words, n)
             fs.append(DistanceUtil.dice_dist(q1_ngrams, q2_ngrams))
@@ -482,7 +517,7 @@ def stat_feature_gen(train_data,test_data,tfidfx):
 	for index, row in all_data.iterrows(): 
 		fs = []
 		fs += negativeWordsCount(row)
-		fs += shareWordscnt(row)
+		fs += shareWordscnt(row,tfidfx)
 		fs += lengthDiff(row)
 		fs += extract_dside(pword_dside, row)
 		fs += extract_oside(pword_oside,row)
@@ -497,22 +532,32 @@ def stat_feature_gen(train_data,test_data,tfidfx):
 		#fs += extract_edt_cp_distance(row)
 #	for index, row in raw_data.iterrows():
 #		fsredt = extract_raw_edt_cp_distance(row)
+#		print len(fs)
 		dfs.loc[i] = fs
 		i += 1
 	print i
 	return dfs
 
 
-#tfidfx = init_tfidf(stptrain,stptest)
-#statcfs = stat_feature_gen(train_data,test_data,tfidfx)
-#statcfs.to_csv('statfs.csv')
+tfidfx = init_tfidf(stptrain,stptest)
+statcfs = stat_feature_gen(train_data,test_data,tfidfx)
+statcfs.to_csv('statfs.csv')
 
-statcfs = pd.read_csv('./statfs.csv')
-del statcfs['Unnamed: 0']
+#statcfs = pd.read_csv('./statfs.csv')
+#del statcfs['Unnamed: 0']
+
 #print statcfs.shape
 #print statcfs.head()
 y_train = train_data['result']
 #print y_train.shape
+
+
+flt = list(statcfs.columns)
+for i in []:#flt:
+	#statcfs[i] = statcfs[i].apply(lambda x: round( x , 6))
+	if statcfs[i].var() < 0.0001:
+        	statcfs = statcfs.drop(i, axis=1)
+
 
 
 traindata = statcfs[:train_data.shape[0]]
@@ -521,69 +566,13 @@ testdata = statcfs[train_data.shape[0]:]
 print testdata.shape
 
 
-xgbst = xgb.XGBClassifier(nthread=4, learning_rate=0.08,n_estimators=3000, max_depth=4, gamma=0, subsample=0.9, colsample_bytree=0.5)
+xgbst = xgb.XGBClassifier(nthread=4, learning_rate=0.08,n_estimators=900, max_depth=6, gamma=0, subsample=0.9, colsample_bytree=0.5)
 print -cross_val_score(xgbst,traindata, y_train, cv = 5,scoring = 'neg_log_loss').mean()
 
 xgbst.fit(traindata, y_train)
 testdata['predicted_score'] = xgbst.predict_proba(testdata)[:, 1]
 testdata[[ 'predicted_score']].to_csv('submity.txt', index=False)
 print("...........end xgboost.........")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-	
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-	
-
-
-	
-
-
-
-
-
-
-
-
-
 
 
 
